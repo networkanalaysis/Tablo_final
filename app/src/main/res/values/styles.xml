@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.TabloTV" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">@color/tablo_accent</item>
+        <item name="android:navigationBarColor">@color/tablo_background</item>
+        <item name="android:statusBarColor">@color/tablo_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

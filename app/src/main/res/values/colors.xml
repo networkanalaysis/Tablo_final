@@ -1,0 +1,7 @@
+<resources>
+    <color name="tablo_background">#10131A</color>
+    <color name="tablo_surface">#1B202B</color>
+    <color name="tablo_accent">#6E8CFF</color>
+    <color name="tablo_text">#F4F6FC</color>
+    <color name="tablo_muted">#AAB1C4</color>
+</resources>
