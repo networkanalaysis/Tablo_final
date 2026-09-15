@@ -7,32 +7,16 @@ channels at once**.
 
 This app replaces the browser frontend from
 [tablo-web](https://github.com/trevor-viljoen/tablo-web). It intentionally keeps
-the existing local backend as the service boundary because the backend handles
-Tablo account authentication, device discovery, FFmpeg transcoding, and HLS
-session cleanup.
+the original Tablo visual language while using the physical Tablo's local REST
+API for discovery, guide data, and live HLS sessions.
 
 ## Architecture
 
 ```text
-Android TV / Fire TV app  --HTTP/HLS-->  tablo-web backend  -->  Tablo device/cloud
+Android TV / Fire TV app  --HTTP/HLS-->  Tablo device
 ```
 
-The APK does not embed a browser or require a web server for its UI. A
-`tablo-web` backend must be reachable on the same network as the TV.
-
-## Run the backend
-
-Use the backend from the referenced project on a computer or small server on
-the same LAN:
-
-```bash
-git clone https://github.com/trevor-viljoen/tablo-web.git
-cd tablo-web
-docker compose up -d
-```
-
-The default address is `http://<server-ip>:7070`. The server must be reachable
-from the TV; `localhost` on the TV is not the computer running Docker.
+The APK does not embed a browser or require a web server for its UI.
 
 ## Build and install
 
@@ -49,8 +33,12 @@ On first launch:
 
 1. Connect the TV and the computer running `tablo-web` to the same Wi-Fi or
    wired LAN.
-2. Enter the Tablo account credentials. The app scans the local network for
-   the Tablo service automatically; no server IP entry is required.
+2. Enter the Tablo account credentials. The app discovers the physical Tablo
+   automatically using the Tablo UDP discovery protocol, the Tablo association
+   service, and a local `/server/info` verification request. No server IP entry
+   is required. The local Tablo API is the source of the device's guide and
+   streams; the credentials remain part of the familiar Tablo sign-in
+   experience.
 3. Use the `PASTE` button beside either credential field when entering text
    from a Fire TV remote, phone, or clipboard. `COPY` is also available for
    selected field contents.
@@ -58,10 +46,8 @@ On first launch:
 5. Select channels from the live guide. Selecting a channel fills the next
    available tile; selecting a playing tile stops it.
 
-The backend must allow cleartext LAN HTTP, which is enabled in the manifest for
-local deployments. Discovery probes the LAN for port `7070`, the default
-`tablo-web` frontend port. Do not expose the backend directly to the public
-internet.
+Cleartext LAN HTTP is enabled in the manifest because the Tablo local API uses
+port `8885`. Do not expose the Tablo device directly to the public internet.
 
 ## Fire TV notes
 

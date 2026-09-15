@@ -39,6 +39,10 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.Inet4Address;
 import java.net.NetworkInterface;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -58,7 +62,8 @@ public class MainActivity extends AppCompatActivity {
     private final List<StreamSlot> slots = new ArrayList<>();
     private SharedPreferences preferences;
     private LinearLayout root;
-    private String baseUrl;
+    private String tabloBaseUrl;
+    private volatile String discoveredTabloUrl;
     private TextView status;
     private GridLayout channelGrid;
     private GridLayout streamGrid;
@@ -110,22 +115,31 @@ public class MainActivity extends AppCompatActivity {
             status.setText("Looking for Tablo on your local network…");
             network.execute(() -> {
                 try {
-                    baseUrl = discoverBackend();
+                    tabloBaseUrl = discoveredTabloUrl != null ? discoveredTabloUrl : discoverTablo();
                     runOnUiThread(() -> status.setText("Connecting to your Tablo…"));
-                    request("/api/auth/login", "POST",
-                            new JSONObject().put("email", email.getText().toString().trim())
-                                    .put("password", password.getText().toString()).toString());
                     loadGuide();
                 } catch (Exception e) {
                     runOnUiThread(() -> {
                         setBusy(signIn, false, "SIGN IN");
-                        status.setText(message(e).contains("No Tablo") ? message(e)
-                                : "Unable to connect to Tablo. Make sure the Tablo server is running on this Wi-Fi network.");
+                        status.setText(message(e));
                     });
                 }
             });
         });
         email.requestFocus();
+        status.setText("Searching your local network for Tablo…");
+        network.execute(() -> {
+            try {
+                discoveredTabloUrl = discoverTablo();
+                runOnUiThread(() -> {
+                    if (status != null) status.setText("Tablo found. Enter your credentials to continue.");
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (status != null) status.setText("Tablo not found yet. Keep this TV on the same network and press SIGN IN to retry.");
+                });
+            }
+        });
     }
 
     private LinearLayout editableRow(EditText editor) {
@@ -162,7 +176,59 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private String discoverBackend() throws Exception {
+    private String discoverTablo() throws Exception {
+        List<String> discoveredIps = new ArrayList<>();
+        try (DatagramSocket receiveSocket = new DatagramSocket(8882);
+             DatagramSocket sendSocket = new DatagramSocket()) {
+            receiveSocket.setSoTimeout(350);
+            receiveSocket.setBroadcast(true);
+            byte[] message = "tablo-discover".getBytes(StandardCharsets.UTF_8);
+            sendSocket.send(new DatagramPacket(message, message.length,
+                    InetAddress.getByName("255.255.255.255"), 8881));
+            long deadline = System.currentTimeMillis() + 2500;
+            byte[] buffer = new byte[2048];
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                    receiveSocket.receive(packet);
+                    String ip = packet.getAddress().getHostAddress();
+                    if (!discoveredIps.contains(ip)) discoveredIps.add(ip);
+                } catch (SocketTimeoutException ignored) {
+                    // Continue until the discovery window closes.
+                }
+            }
+        } catch (Exception ignored) {
+            // Some TV networks block broadcast; association-server discovery is
+            // still attempted below.
+        }
+
+        String association = rawRequest(
+                "https://api.tablotv.com/assocserver/getipinfo/", "GET", null);
+        JSONObject associationJson = new JSONObject(association);
+        JSONArray cpes = associationJson.optJSONArray("cpes");
+        if (cpes != null) {
+            for (int i = 0; i < cpes.length(); i++) {
+                JSONObject cpe = cpes.getJSONObject(i);
+                String ip = cpe.optString("private_ip", cpe.optString("slip", ""));
+                if (!ip.isEmpty() && !discoveredIps.contains(ip)) discoveredIps.add(ip);
+            }
+        }
+
+        for (String ip : discoveredIps) {
+            String candidate = "http://" + ip + ":8885";
+            try {
+                String info = rawRequest(candidate + "/server/info", "GET", null);
+                if (new JSONObject(info).length() > 0) {
+                    preferences.edit().putString("tablo_host", candidate).apply();
+                    return candidate;
+                }
+            } catch (Exception ignored) {
+                // A stale association record or unrelated UDP response.
+            }
+        }
+
+        // Fall back to a bounded local subnet scan when UDP and association
+        // lookup do not return a usable address.
         List<String> prefixes = new ArrayList<>();
         Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
         while (interfaces.hasMoreElements()) {
@@ -183,11 +249,11 @@ public class MainActivity extends AppCompatActivity {
         List<java.util.concurrent.Future<String>> probes = new ArrayList<>();
         for (String prefix : prefixes) {
             for (int host = 1; host < 255; host++) {
-                final String candidate = "http://" + prefix + "." + host + ":7070";
+                final String candidate = "http://" + prefix + "." + host + ":8885";
                 probes.add(network.submit(() -> {
                     try {
-                        String response = rawRequest(candidate + "/api/health", "GET", null);
-                        return response.contains("\"ok\"") ? candidate : null;
+                        String response = rawRequest(candidate + "/server/info", "GET", null);
+                        return new JSONObject(response).length() > 0 ? candidate : null;
                     } catch (Exception ignored) {
                         return null;
                     }
@@ -200,22 +266,28 @@ public class MainActivity extends AppCompatActivity {
                 if (probe.isDone()) {
                     String result = probe.get();
                     if (result != null) {
-                        preferences.edit().putString("server", result).apply();
+                        preferences.edit().putString("tablo_host", result).apply();
                         return result;
                     }
                 }
             }
             Thread.sleep(100);
         }
-        throw new Exception("No Tablo server found on this network. Start the local Tablo service and try again.");
+        throw new Exception("No Tablo was found on this network. Connect the TV to the same Wi-Fi as your Tablo and try again.");
     }
 
     private void loadGuide() {
         network.execute(() -> {
             try {
-                JSONArray data = new JSONArray(request("/api/channels/guide", "GET", null));
                 channels.clear();
-                for (int i = 0; i < data.length(); i++) channels.add(Channel.from(data.getJSONObject(i)));
+                JSONArray paths = new JSONArray(request("/guide/channels", "GET", null));
+                for (int i = 0; i < paths.length(); i++) {
+                    String path = paths.optString(i, "");
+                    if (!path.isEmpty()) {
+                        channels.add(Channel.fromTablo(path,
+                                new JSONObject(request(path, "GET", null))));
+                    }
+                }
                 runOnUiThread(this::showDashboard);
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -334,10 +406,12 @@ public class MainActivity extends AppCompatActivity {
         status.setText("Starting " + channel.displayName + "…");
         network.execute(() -> {
             try {
-                JSONObject response = new JSONObject(request("/api/stream/" + Uri.encode(channel.identifier), "POST", null));
-                slot.sessionId = response.getString("session_id");
-                String streamUrl = response.getString("stream_url");
-                if (!streamUrl.startsWith("http")) streamUrl = baseUrl + (streamUrl.startsWith("/") ? "" : "/") + streamUrl;
+                JSONObject response = new JSONObject(request(channel.identifier + "/watch", "POST", "{}"));
+                slot.sessionId = response.optString("token", "");
+                String streamUrl = response.getString("playlist_url");
+                if (!streamUrl.startsWith("http")) {
+                    streamUrl = tabloBaseUrl + (streamUrl.startsWith("/") ? "" : "/") + streamUrl;
+                }
                 String finalStreamUrl = streamUrl;
                 runOnUiThread(() -> startPlayer(slot, finalStreamUrl));
             } catch (Exception e) {
@@ -423,13 +497,14 @@ public class MainActivity extends AppCompatActivity {
         if (slot.sessionId != null) {
             String session = slot.sessionId;
             network.execute(() -> {
-                try { request("/api/stream/" + Uri.encode(session), "DELETE", null); } catch (Exception ignored) {}
+                try { request("/watch/" + Uri.encode(session), "DELETE", null); } catch (Exception ignored) {}
             });
         }
     }
 
     private String request(String path, String method, @Nullable String body) throws Exception {
-        return rawRequest(baseUrl + path, method, body);
+        String normalized = path.startsWith("/") ? path : "/" + path;
+        return rawRequest(tabloBaseUrl + normalized, method, body);
     }
 
     private String rawRequest(String target, String method, @Nullable String body) throws Exception {
@@ -559,6 +634,19 @@ public class MainActivity extends AppCompatActivity {
             channel.major = object.optInt("major", 0);
             channel.minor = object.optInt("minor", 0);
             channel.kind = object.optString("kind", "ota");
+            return channel;
+        }
+
+        static Channel fromTablo(String path, JSONObject object) {
+            Channel channel = new Channel();
+            JSONObject metadata = object.optJSONObject("channel");
+            if (metadata == null) metadata = object;
+            channel.identifier = path;
+            channel.callSign = metadata.optString("call_sign", metadata.optString("network", "TABLO"));
+            channel.displayName = metadata.optString("display_title", metadata.optString("network", channel.callSign));
+            channel.major = metadata.optInt("major", 0);
+            channel.minor = metadata.optInt("minor", 0);
+            channel.kind = "ota";
             return channel;
         }
     }
