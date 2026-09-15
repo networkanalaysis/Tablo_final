@@ -47,14 +47,21 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 On first launch:
 
-1. Enter the backend address, such as `http://192.168.1.20:7070`.
-2. Enter the Tablo account credentials.
-3. Select the desired stream count.
-4. Select channels from the live guide. Selecting a channel fills the next
+1. Connect the TV and the computer running `tablo-web` to the same Wi-Fi or
+   wired LAN.
+2. Enter the Tablo account credentials. The app scans the local network for
+   the Tablo service automatically; no server IP entry is required.
+3. Use the `PASTE` button beside either credential field when entering text
+   from a Fire TV remote, phone, or clipboard. `COPY` is also available for
+   selected field contents.
+4. Select the desired stream count.
+5. Select channels from the live guide. Selecting a channel fills the next
    available tile; selecting a playing tile stops it.
 
 The backend must allow cleartext LAN HTTP, which is enabled in the manifest for
-local deployments. Do not expose the backend directly to the public internet.
+local deployments. Discovery probes the LAN for port `7070`, the default
+`tablo-web` frontend port. Do not expose the backend directly to the public
+internet.
 
 ## Fire TV notes
 
