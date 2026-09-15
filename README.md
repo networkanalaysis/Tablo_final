@@ -33,12 +33,11 @@ On first launch:
 
 1. Connect the TV and the computer running `tablo-web` to the same Wi-Fi or
    wired LAN.
-2. Enter the Tablo account credentials. The app discovers the physical Tablo
-   automatically using the Tablo UDP discovery protocol, the Tablo association
-   service, and a local `/server/info` verification request. No server IP entry
-   is required. The local Tablo API is the source of the device's guide and
-   streams; the credentials remain part of the familiar Tablo sign-in
-   experience.
+2. Enter the Tablo account credentials. The Kotlin login screen automatically
+   discovers the physical Tablo using the Tablo UDP discovery protocol, the
+   Tablo association service, and a local `/server/info` verification request.
+   No server IP entry is required. Discovered devices appear as selectable
+   cards, matching the Multiview login functionality.
 3. Use the `PASTE` button beside either credential field when entering text
    from a Fire TV remote, phone, or clipboard. `COPY` is also available for
    selected field contents.
@@ -48,6 +47,14 @@ On first launch:
 
 Cleartext LAN HTTP is enabled in the manifest because the Tablo local API uses
 port `8885`. Do not expose the Tablo device directly to the public internet.
+
+## UI and implementation
+
+The app is implemented in Kotlin. Its login behavior is based on the
+Multiview project's device discovery and selection flow, while its visual
+language follows the `tablo-web` client: dark surfaces, blue accents, Tablo
+branding, rounded cards, Live TV/Guide/Library navigation, and an ON AIR NOW
+live guide. The UI is native Android and does not embed the referenced web app.
 
 ## Fire TV notes
 
