@@ -1,11 +1,15 @@
 package com.tablo.tv;
 
 import android.content.Context;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.text.InputType;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -33,9 +37,12 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.Inet4Address;
+import java.net.NetworkInterface;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -55,6 +62,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView status;
     private GridLayout channelGrid;
     private GridLayout streamGrid;
+    private String channelFilter = "";
     private int maxStreams = 1;
 
     @Override
@@ -71,57 +79,135 @@ public class MainActivity extends AppCompatActivity {
         card.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(card, new LinearLayout.LayoutParams(-1, -2));
 
-        TextView title = text("TABLO TV", 32, Color.WHITE);
+        TextView title = text("TABLO", 32, Color.WHITE);
         title.setGravity(Gravity.CENTER);
         card.addView(title, margins(0, 20, 0, 8));
-        TextView subtitle = text("Native live TV for Android TV and Fire TV", 16, color("tablo_muted"));
+        TextView subtitle = text("Sign in with your Tablo account", 16, color("tablo_muted"));
         subtitle.setGravity(Gravity.CENTER);
         card.addView(subtitle, margins(0, 0, 0, 28));
 
-        EditText server = field("Backend address (for example http://192.168.1.20:7070)");
-        server.setText(preferences.getString("server", "http://10.0.2.2:7070"));
-        server.setSingleLine(true);
-        card.addView(server, wideParams());
-
         EditText email = field("Tablo account email");
         email.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-        card.addView(email, wideParams());
+        card.addView(editableRow(email), wideParams());
 
         EditText password = field("Tablo account password");
         password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        card.addView(password, wideParams());
+        card.addView(editableRow(password), wideParams());
 
         Button signIn = button("SIGN IN");
+        signIn.setBackgroundResource(R.drawable.button_accent);
         card.addView(signIn, margins(0, 14, 0, 0));
         status = text("", 14, Color.rgb(255, 145, 145));
         status.setGravity(Gravity.CENTER);
         card.addView(status, margins(0, 12, 0, 0));
 
         signIn.setOnClickListener(v -> {
-            String serverValue = server.getText().toString().trim();
-            if (serverValue.endsWith("/")) serverValue = serverValue.substring(0, serverValue.length() - 1);
-            if (serverValue.isEmpty() || email.getText().length() == 0 || password.getText().length() == 0) {
-                status.setText("Enter the server address, email, and password.");
+            if (email.getText().length() == 0 || password.getText().length() == 0) {
+                status.setText("Enter your Tablo email and password.");
                 return;
             }
-            baseUrl = serverValue;
-            setBusy(signIn, true, "CONNECTING…");
+            setBusy(signIn, true, "FINDING TABLO…");
+            status.setText("Looking for Tablo on your local network…");
             network.execute(() -> {
                 try {
+                    baseUrl = discoverBackend();
+                    runOnUiThread(() -> status.setText("Connecting to your Tablo…"));
                     request("/api/auth/login", "POST",
                             new JSONObject().put("email", email.getText().toString().trim())
                                     .put("password", password.getText().toString()).toString());
-                    preferences.edit().putString("server", baseUrl).apply();
                     loadGuide();
                 } catch (Exception e) {
                     runOnUiThread(() -> {
                         setBusy(signIn, false, "SIGN IN");
-                        status.setText(message(e));
+                        status.setText(message(e).contains("No Tablo") ? message(e)
+                                : "Unable to connect to Tablo. Make sure the Tablo server is running on this Wi-Fi network.");
                     });
                 }
             });
         });
-        server.requestFocus();
+        email.requestFocus();
+    }
+
+    private LinearLayout editableRow(EditText editor) {
+        LinearLayout row = row(0);
+        row.setBackgroundColor(Color.rgb(27, 32, 43));
+        row.addView(editor, new LinearLayout.LayoutParams(0, -1, 1));
+        Button paste = button("PASTE");
+        paste.setOnClickListener(v -> pasteInto(editor));
+        row.addView(paste, margins(0, 0, 4, 0));
+        Button copy = button("COPY");
+        copy.setOnClickListener(v -> copyFrom(editor));
+        row.addView(copy);
+        return row;
+    }
+
+    private void pasteInto(EditText editor) {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null && clipboard.hasPrimaryClip()) {
+            ClipData clip = clipboard.getPrimaryClip();
+            if (clip != null && clip.getItemCount() > 0) {
+                editor.setText(clip.getItemAt(0).coerceToText(this));
+                editor.setSelection(editor.length());
+            }
+        } else {
+            Toast.makeText(this, "Nothing to paste", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void copyFrom(EditText editor) {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(ClipData.newPlainText("Tablo", editor.getText()));
+            Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private String discoverBackend() throws Exception {
+        List<String> prefixes = new ArrayList<>();
+        Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+        while (interfaces.hasMoreElements()) {
+            NetworkInterface networkInterface = interfaces.nextElement();
+            if (!networkInterface.isUp() || networkInterface.isLoopback()) continue;
+            Enumeration<java.net.InetAddress> addresses = networkInterface.getInetAddresses();
+            while (addresses.hasMoreElements()) {
+                java.net.InetAddress address = addresses.nextElement();
+                if (address instanceof Inet4Address && !address.isLoopbackAddress()) {
+                    String host = address.getHostAddress();
+                    int lastDot = host.lastIndexOf('.');
+                    if (lastDot > 0) prefixes.add(host.substring(0, lastDot));
+                }
+            }
+        }
+        if (prefixes.isEmpty()) throw new Exception("No Tablo network found. Connect the TV to Wi-Fi and try again.");
+
+        List<java.util.concurrent.Future<String>> probes = new ArrayList<>();
+        for (String prefix : prefixes) {
+            for (int host = 1; host < 255; host++) {
+                final String candidate = "http://" + prefix + "." + host + ":7070";
+                probes.add(network.submit(() -> {
+                    try {
+                        String response = rawRequest(candidate + "/api/health", "GET", null);
+                        return response.contains("\"ok\"") ? candidate : null;
+                    } catch (Exception ignored) {
+                        return null;
+                    }
+                }));
+            }
+        }
+        long deadline = System.currentTimeMillis() + 15_000;
+        while (System.currentTimeMillis() < deadline) {
+            for (java.util.concurrent.Future<String> probe : probes) {
+                if (probe.isDone()) {
+                    String result = probe.get();
+                    if (result != null) {
+                        preferences.edit().putString("server", result).apply();
+                        return result;
+                    }
+                }
+            }
+            Thread.sleep(100);
+        }
+        throw new Exception("No Tablo server found on this network. Start the local Tablo service and try again.");
     }
 
     private void loadGuide() {
@@ -142,8 +228,28 @@ public class MainActivity extends AppCompatActivity {
     private void showDashboard() {
         root = page();
         LinearLayout header = row(0);
-        TextView title = text("TABLO TV", 25, Color.WHITE);
-        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView title = text("TABLO", 25, Color.WHITE);
+        header.addView(title, margins(0, 0, 24, 0));
+        Button liveTab = button("Live TV");
+        liveTab.setTextColor(color("tablo_accent"));
+        header.addView(liveTab, margins(0, 0, 4, 0));
+        Button guideTab = button("Guide");
+        guideTab.setOnClickListener(v -> status.setText("Guide view is loading from the Tablo service."));
+        header.addView(guideTab, margins(0, 0, 4, 0));
+        Button libraryTab = button("Library");
+        libraryTab.setOnClickListener(v -> status.setText("Library view is loading from the Tablo service."));
+        header.addView(libraryTab, new LinearLayout.LayoutParams(0, -2, 1));
+        EditText search = field("Search programs, channels…");
+        search.setSingleLine(true);
+        search.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                channelFilter = s.toString().trim().toLowerCase();
+                renderChannels();
+            }
+            public void afterTextChanged(Editable s) {}
+        });
+        header.addView(search, new LinearLayout.LayoutParams(dp(300), dp(48)));
         TextView count = text("STREAMS", 13, color("tablo_muted"));
         header.addView(count, margins(8, 0, 8, 0));
         Spinner streamCount = new Spinner(this);
@@ -172,6 +278,11 @@ public class MainActivity extends AppCompatActivity {
         status = text("Select a channel to add it to the stream wall.", 14, color("tablo_muted"));
         root.addView(status, margins(24, 5, 24, 8));
 
+        TextView onAir = text("ON AIR NOW", 28, Color.WHITE);
+        root.addView(onAir, margins(24, 8, 24, 0));
+        TextView onAirSubtitle = text("Browse your local guide and start watching instantly", 14, color("tablo_muted"));
+        root.addView(onAirSubtitle, margins(24, 0, 24, 10));
+
         streamGrid = new GridLayout(this);
         streamGrid.setColumnCount(2);
         streamGrid.setRowCount(2);
@@ -191,6 +302,8 @@ public class MainActivity extends AppCompatActivity {
     private void renderChannels() {
         channelGrid.removeAllViews();
         for (Channel channel : channels) {
+            String searchable = (channel.callSign + " " + channel.displayName).toLowerCase();
+            if (!channelFilter.isEmpty() && !searchable.contains(channelFilter)) continue;
             Button item = button(channel.displayName + "\n" + channel.callSign);
             item.setTextSize(14);
             item.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
@@ -316,7 +429,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String request(String path, String method, @Nullable String body) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + path).openConnection();
+        return rawRequest(baseUrl + path, method, body);
+    }
+
+    private String rawRequest(String target, String method, @Nullable String body) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(target).openConnection();
         connection.setRequestMethod(method);
         connection.setConnectTimeout(10_000);
         connection.setReadTimeout(30_000);
@@ -376,6 +493,7 @@ public class MainActivity extends AppCompatActivity {
         field.setTextSize(16);
         field.setSingleLine(true);
         field.setPadding(dp(16), 0, dp(16), 0);
+        field.setBackgroundResource(R.drawable.field_surface);
         return field;
     }
 
@@ -386,6 +504,8 @@ public class MainActivity extends AppCompatActivity {
         button.setTextSize(13);
         button.setAllCaps(false);
         button.setFocusable(true);
+        button.setPadding(dp(14), 0, dp(14), 0);
+        button.setBackgroundResource(R.drawable.button_surface);
         return button;
     }
 
